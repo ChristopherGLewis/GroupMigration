@@ -44,6 +44,39 @@ Set-Item ENV:ZertoServer $ZertoSourceServer
 Set-Item ENV:ZertoPort $ZertoSourceServerPort
 Set-ZertoAuthToken -ZertoUser $ZertoUser
 
+#Guess at our datastore
+switch ($RecoverySiteName) {
+    'CHAPDA' {
+        #Cluster s/b 'CHAPDA3Z_MNA01'
+        $IDRange = 01..16
+        $DatastoreName = $VPGData.ZertoDatastoreClusterName + (Get-Random -InputObject $IDRange).ToString("_00")
+    }
+    'DENPDA' {
+        #Cluster s/b 'DENPDA3Z_MNA01'
+        $IDRange = 01..16
+        $DatastoreName = $VPGData.ZertoDatastoreClusterName + (Get-Random -InputObject $IDRange).ToString("_00")
+    }
+    'DENPDB' {
+        #Cluster s/b 'DENPDB3Z_MNA01'
+        $IDRange = 01..08
+        $DatastoreName = $VPGData.ZertoDatastoreClusterName + (Get-Random -InputObject $IDRange).ToString("_00")
+    }
+    'Zerto-IL1' {
+        #Cluster s/b 'IL1VSP1_DUS_PRD_ZERTO_FAILBACK'
+        if ($VPGData.ZertoDatastoreClusterName -eq 'IL1VSP1_DUS_PRD_ZERTO_FAILBACK') {
+            $DSArray = ('IL1VSP1_PRD_LD10BE_CP1_P1-6',
+                        'IL1VSP1_PRD_LD10BD_CP2_P1-6',
+                        'IL1VSP1_PRD_LD10BC_CP1_P0-6',
+                        'IL1VSP1_PRD_LD10BB_CP2_P0-6',
+                        'IL1VSP1_PRD_LD10BA_CP2_P0-6' )
+            $DatastoreName = $DSArray | Get-Random
+        } else {
+        }
+    }
+} 
+
+
+
 #Create our array of VMs'
 $AllVMS = @()
 $NSMData | ForEach-Object {
@@ -71,9 +104,21 @@ $NSMData | ForEach-Object {
                                     -TestDNS2       $_.($MigrationType + 'TestDNS2') `
                                     -TestDNSSuffix  $_.DNSSuffix
     }
+    #Override Network
+    if ( [System.String]::IsNullOrEmpty( $_.($MigrationType + 'VPG:ZertoFailoverNetworkOverride') ) ) {
+        $IP.NetworkID = Get-ZertoSiteNetworkID -ZertoSiteIdentifier (Get-ZertoSiteID -ZertoSiteName ($RecoverySiteName)) `
+                            -NetworkName ( $_.($MigrationType + 'VPG:ZertoFailoverNetworkOverride'))
+    }
 
-    $VM = New-ZertoVPGVirtualMachine -VMName $_.Name  -VPGFailoverIPAddress $IP
-    $AllVMS += $VM
+    #Override folder
+    if ( [System.String]::IsNullOrEmpty( $_.($MigrationType + 'VPG:ZertoRecoveryFolderOverride') ) ) {
+        $Recovery = New-ZertoVPGVMRecovery -FolderIdentifier ( $_.($MigrationType + 'VPG:ZertoRecoveryFolderOverride') )
+        $VM = New-ZertoVPGVirtualMachine -VMName $_.Name  -VPGFailoverIPAddress $IP -VPGVMRecovery $Recovery 
+        $AllVMS += $VM
+    } else {
+        $VM = New-ZertoVPGVirtualMachine -VMName $_.Name  -VPGFailoverIPAddress $IP 
+        $AllVMS += $VM
+    }
 }
 
 Write-Host ("Adding " + $AllVMS.Count + " VMs")
@@ -87,8 +132,41 @@ If ([string]::IsNullOrEmpty( $VPGData.ZertoReplicationPriority) ) {
 $RecoverySiteName = $VPGData.ZertoRecoverySiteName
 $HostCluster  = $VPGData.ZertoHostClusterName
 $DatastoreClusterName = $VPGData.ZertoDatastoreClusterName
-#Guess at our Datastore - we should probably 
-$DatastoreName = $VPGData.ZertoDatastoreClusterName + '_03' 
+#Guess at our datastore
+switch ($RecoverySiteName) {
+    'CHAPDA' {
+        #Cluster s/b 'CHAPDA3Z_MNA01'
+        $IDRange = 01..16
+        $DSNumber = (Get-Random -InputObject $IDRange).ToString("_00")
+        $DatastoreName = $VPGData.ZertoDatastoreClusterName + $DSNumber
+    }
+    'DENPDA' {
+        #Cluster s/b 'DENPDA3Z_MNA01'
+        $IDRange = 01..16
+        $DSNumber = (Get-Random -InputObject $IDRange).ToString("_00")
+        $DatastoreName = $VPGData.ZertoDatastoreClusterName + $DSNumber
+    }
+    'DENPDB' {
+        #Cluster s/b 'DENPDB3Z_MNA01'
+        $IDRange = 01..08
+        $DSNumber = (Get-Random -InputObject $IDRange).ToString("_00")
+        $DatastoreName = $VPGData.ZertoDatastoreClusterName + $DSNumber
+    }
+    'Zerto-IL1' {
+        #Cluster s/b 'IL1VSP1_DUS_PRD_ZERTO_FAILBACK'
+        if ($VPGData.ZertoDatastoreClusterName -eq 'IL1VSP1_DUS_PRD_ZERTO_FAILBACK') {
+            $DSArray = ('IL1VSP1_PRD_LD10BE_CP1_P1-6',
+                        'IL1VSP1_PRD_LD10BD_CP2_P1-6',
+                        'IL1VSP1_PRD_LD10BC_CP1_P0-6',
+                        'IL1VSP1_PRD_LD10BB_CP2_P0-6',
+                        'IL1VSP1_PRD_LD10BA_CP2_P0-6' )
+            $DatastoreName = $DSArray | Get-Random
+        } else {
+        }
+    }
+} 
+
+
 $Network = $VPGData.ZertoFailoverNetwork
 $TestNetwork = $VPGData.ZertoTestNetwork
 $DefaultFolder = $VPGData.ZertoRecoveryFolder
