@@ -1,10 +1,9 @@
 <#
 .SYNOPSIS
-Tests the VPG and NSM lists for a  given migration group
+Tests the VPG and NSM lists for a given migration group
 
 .DESCRIPTION
-The Make-GroupVPG.ps1 script creates a VPG for a given migration group.  The Script reads the VPG from the VPGList and then 
-processes each VM in the NSM to grab destination IP information.
+The Test-Group.ps1 script tests a migration group VPG's entries in the NSM
 
 .PARAMETER GroupName 
 Name of the Zerto VPG Migration Group.  Typically in the form Group01-CHAPDA or Group01-DENPDA
@@ -15,18 +14,6 @@ The migration type:
     FP -> Migration back from CHA/DEN to FP as our parachute replication
     DR -> end state DR from CHAPDA to DENPDA
 
-.PARAMETER ZertoSourceServer  
-FQDN of the Zerto Source Server
-
-.PARAMETER ZertoUser   
-User for the Zerto source server
-
-.PARAMETER ZertoSourceServerPort 
-Zerto Source Server port - defaults to 9669
-
-.PARAMETER CommitVPG
-Switch to commit the VPG.  Without this switch, the script just processes without creating the VPG.  It does dump the 
-REST API Json for diagnostics
 
 .PARAMETER Ver
 Displays the version number and exits
@@ -34,26 +21,16 @@ Displays the version number and exits
 .EXAMPLE 
 #This DOES NOT commit the VPG
 
-.\Make-GroupVPG.ps1 -GroupName 'GROUP01-CHAPDA' `
-                    -MigrationType Mig `
-                    -ZertoSourceServer 'il1zerto.nuveen.com' `
-                    -ZertoUser 'nuveen\e_lewiCG'
-
-.EXAMPLE 
-#This commits the VPG
-
-.\Make-GroupVPG.ps1 -GroupName 'GROUP01-CHAPDA' `
-                    -MigrationType Mig `
-                    -ZertoSourceServer 'il1zerto.nuveen.com' `
-                    -ZertoUser 'nuveen\e_lewiCG' `
-                    -CommitVPG
+.\Test-Group.ps1 -GroupName 'GROUP01-CHAPDA' -MigrationType Mig 
 
 .NOTES
 Author: Chris Lewis
-Date: 2017-03-02
-Version: 1.1
+Date: 2017-03-17
+Version: 1.2
 History:
     1.0 Initial create
+    1.1 Added used IP check
+    1.2 Added better layout for test results
 
 #>
 
@@ -98,7 +75,7 @@ function Get-Datastore {
                             'IL1VSP1_PRD_LD10BA_CP2_P0-6' )
                 $DatastoreName = $DSArray | Get-Random
             } else {
-                throw "Invalid IL1 Cluster"
+                #throw "Invalid IL1 Cluster"
             }
         }
         default {
@@ -109,7 +86,7 @@ function Get-Datastore {
 }
 
 
-$ScriptVersion = "1.1"
+$ScriptVersion = "1.2"
 
 if ( $ver) {
     Write-Host ($MyInvocation.MyCommand.Name + " - Version $ScriptVersion")
@@ -123,7 +100,7 @@ If ( -not (Test-Path $NSMSource) ) {
     throw "Cound not find NSMSource at '$NSMSource'"
     Return
 }
-If ( -not (Test-Path $NSMSource) ) {
+If ( -not (Test-Path $VPGSource) ) {
     throw "Cound not find VPGSource at '$VPGSource'"
     Return
 }
@@ -157,51 +134,105 @@ $TestNetwork = $VPGData.ZertoTestNetwork
 $DefaultFolder = $VPGData.ZertoRecoveryFolder
 
 #Display some VPG Information
-
+$VPGErrors = 0
 Write-Host "Creating VPG '$VPGName' with destination '$RecoverySiteName'"
-Write-Host "  Cluster:`t`t`t $HostClusterName"
-Write-Host "  DatastoreCluster:`t $DatastoreClusterName"
-Write-Host "  Datastore:`t`t $DatastoreName"
-Write-Host "  Network:`t`t`t $Network"
-Write-Host "  TestNetwork:`t`t $TestNetwork"
-Write-Host "  DefaultFolder:`t $DefaultFolder"
+Write-Host -NoNewline "  Cluster:`t`t`t $HostClusterName"
+if ( [System.String]::IsNullOrEmpty( $HostClusterName ) ) { Write-Host -ForegroundColor Red "  *** Invalid HostClusterName $HostClusterName"; $VPGErrors++} else {Write-host ""}
+Write-Host -NoNewline "  DatastoreCluster:`t $DatastoreClusterName"
+if ( [System.String]::IsNullOrEmpty( $DatastoreClusterName ) ) { Write-Host -ForegroundColor Red "  *** Invalid DatastoreClusterName $DatastoreClusterName"; $VPGErrors++} else {Write-host ""}
+Write-Host -NoNewline "  Datastore:`t`t $DatastoreName"
+if ( [System.String]::IsNullOrEmpty( $DatastoreName ) ) { Write-Host -ForegroundColor Red "  *** Invalid DatastoreName $DatastoreName"; $VPGErrors++} else {Write-host ""}
+Write-Host -NoNewline "  Network:`t`t`t $Network"
+if ( [System.String]::IsNullOrEmpty( $Network ) ) { Write-Host -ForegroundColor Red "  *** Invalid Network $Network"; $VPGErrors++} else {Write-host ""}
+Write-Host -NoNewline "  TestNetwork:`t`t $TestNetwork"
+if ( [System.String]::IsNullOrEmpty( $TestNetwork ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestNetwork $TestNetwork"; $VPGErrors++} else {Write-host ""}
+Write-Host -NoNewline "  DefaultFolder:`t $DefaultFolder"
+if ( [System.String]::IsNullOrEmpty( $DefaultFolder ) ) { Write-Host -ForegroundColor Red "  *** Invalid HostClusterName $DefaultFolder"; $VPGErrors++} else {Write-host ""}
 
 
 #Create our array of VMs'
 $VMCount = 0
 $VMErrors = 0
 $NSMData | ForEach-Object {
-    $VMName =  $_.Name
+    $ThisVM = $_  #Switch breaks $_
+    $VMName =  $ThisVM.Name
 
-    Write-Host "`nAdding VM: " $VMName
-    Write-Host "  IPAddress`t`t" $_.($MigrationType + 'EventIPAddress')
-    Write-Host "  SubnetMask`t" $_.($MigrationType + 'EventSubnetMask')
-    Write-Host "  Gateway`t`t" $_.($MigrationType + 'EventGateway')
-    Write-Host "  DNS1`t`t`t" $_.($MigrationType + 'EventDNS1')
-    Write-Host "  DNS2`t`t`t" $_.($MigrationType + 'EventDNS2')
-    Write-Host "  DNSSuffix`t`t" $_.DNSSuffix
+    Switch ($MigrationType) {
+        'Mig' { 
+            $IPAddress = $ThisVM.($MigrationType + 'EventIPAddress')
+            $SubnetMask = $ThisVM.($MigrationType + 'EventSubnetMask')
+            $Gateway = $ThisVM.($MigrationType + 'EventGateway')
+            $DNS1 = $ThisVM.($MigrationType + 'EventDNS1')
+            $DNS2 = $ThisVM.($MigrationType + 'EventDNS2')
+            $TestIPAddress = $ThisVM.($MigrationType + 'TestIPAddress')
+            $TestSubnetMask = $ThisVM.($MigrationType + 'TestSubnetMask')
+            $TestGateway = $ThisVM.($MigrationType + 'TestGateway')
+            $TestDNS1 = $ThisVM.($MigrationType + 'TestDNS1')
+            $TestDNS2 = $ThisVM.($MigrationType + 'TestDNS2')
+         }
+        'DR'  { 
+            $IPAddress = $ThisVM.($MigrationType + 'EventIPAddress')
+            $SubnetMask = $ThisVM.($MigrationType + 'EventSubnetMask')
+            $Gateway = $ThisVM.($MigrationType + 'EventGateway')
+            $DNS1 = $ThisVM.($MigrationType + 'EventDNS1')
+            $DNS2 = $ThisVM.($MigrationType + 'EventDNS2')
+            $TestIPAddress = $ThisVM.($MigrationType + 'TestIPAddress')
+            $TestSubnetMask = $ThisVM.($MigrationType + 'TestSubnetMask')
+            $TestGateway = $ThisVM.($MigrationType + 'TestGateway')
+            $TestDNS1 = $ThisVM.($MigrationType + 'TestDNS1')
+            $TestDNS2 = $ThisVM.($MigrationType + 'TestDNS2')
+         }
+        'FP'  { 
+            $IPAddress = $ThisVM.($MigrationType + 'FailbackIPAddress')
+            $SubnetMask = $ThisVM.($MigrationType + 'FailbackSubnetMask')
+            $Gateway = $ThisVM.($MigrationType + 'FailbackGateway')
+            $DNS1 = $ThisVM.($MigrationType + 'FailbackDNS1')
+            $DNS2 = $ThisVM.($MigrationType + 'FailbackDNS2')
+            $TestIPAddress = $Null
+            $TestSubnetMask = $Null
+            $TestGateway = $Null
+            $TestDNS1 = $Null
+            $TestDNS2 = $Null
+         }
+    }
+    $DNSSuffix = $_.DNSSuffix
+
+    Write-Host "Adding VM: " $VMName
+    Write-Host -NoNewline "  IPAddress`t`t" $IPAddress
+    if ( [System.String]::IsNullOrEmpty( $IPAddress ) ) { Write-Host -ForegroundColor Red "  *** Invalid IPAddress $IPAddress"; $VMErrors++} else {Write-host ""}
+    Write-Host -NoNewline "  SubnetMask`t" $SubnetMask
+    if ( [System.String]::IsNullOrEmpty( $SubnetMask ) ) { Write-Host -ForegroundColor Red "  *** Invalid SubnetMask $SubnetMask"; $VMErrors++} else {Write-host ""}
+    Write-Host -NoNewline "  Gateway`t`t" $Gateway
+    if ( [System.String]::IsNullOrEmpty( $Gateway ) ) { Write-Host -ForegroundColor Red "  *** Invalid Gateway $Gateway"; $VMErrors++} else {Write-host ""}
+    Write-Host -NoNewline "  DNS1`t`t`t" $DNS1
+    if ( [System.String]::IsNullOrEmpty( $DNS1 ) ) { Write-Host -ForegroundColor Red "  *** Invalid DNS1 $DNS1"; $VMErrors++} else {Write-host ""}
+    Write-Host -NoNewline "  DNS2`t`t`t" $DNS2
+    if ( [System.String]::IsNullOrEmpty( $DNS2 ) ) { Write-Host -ForegroundColor Red "  *** Invalid DNS2 $DNS2"; $VMErrors++} else {Write-host ""}
+    Write-Host -NoNewline "  DNSSuffix`t`t" $DNSSuffix
+    if ( [System.String]::IsNullOrEmpty( $DNSSuffix ) ) { Write-Host -ForegroundColor Red "  *** Invalid DNSSuffix $DNSSuffix"; $VMErrors++} else {Write-host ""}
+
+    if ( -not [System.String]::IsNullOrEmpty( $TestIPAddress ) ) {
+        Write-Host -NoNewline "  Test IPAddress:`t`t" $TestIPAddress
+        if ( [System.String]::IsNullOrEmpty( $TestIPAddress ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestIPAddress $TestIPAddress"; $VMErrors++} else {Write-host ""}
+        Write-Host -NoNewline "  Test SubnetMask:`t" $TestSubnetMask
+        if ( [System.String]::IsNullOrEmpty( $TestSubnetMask ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestSubnetMask $TestSubnetMask"; $VMErrors++} else {Write-host ""}
+        Write-Host -NoNewline "  Test Gateway:`t`t" $TestGateway
+        if ( [System.String]::IsNullOrEmpty( $TestGateway ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestGateway $TestGateway"; $VMErrors++} else {Write-host ""}
+        Write-Host -NoNewline "  Test DNS1:`t`t`t" $TestDNS1
+        if ( [System.String]::IsNullOrEmpty( $TestDNS1 ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestDNS1 $TestDNS1"; $VMErrors++} else {Write-host ""}
+        Write-Host -NoNewline "  Test DNS2:`t`t`t" $TestDNS2
+        if ( [System.String]::IsNullOrEmpty( $TestDNS2 ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestDNS2 $TestDNS2"; $VMErrors++} else {Write-host ""}
+        Write-Host -NoNewline "  Test DNSSuffix:`t`t" $DNSSuffix
+        if ( [System.String]::IsNullOrEmpty( $DNSSuffix ) ) { Write-Host -ForegroundColor Red "  *** Invalid DNSSuffix $DNSSuffix"; $VMErrors++} else {Write-host ""}
+    }
 
     #Check our IP 
     $NewIPAddress = $_.($MigrationType + 'EventIPAddress')
     $AnyDupeInNSM = $FullNSM.Where( { ($_.($MigrationType + 'EventIPAddress') -eq "$NewIPAddress") -and
                                        ($_.Name -NE "$VMname") } ) 
     if ( $AnyDupeInNSM.Count -gt 0 ) {
-        Write-Host "  *** ERROR - '$MigrationType' IPAddress also exists in server " $AnyDupeInNSM[0].Name
+        Write-Host -ForegroundColor Red "  *** ERROR - '$MigrationType' IPAddress also exists in server " $AnyDupeInNSM[0].Name
         $VMErrors++
-    }
-
-    #Throw on error - 
-    try {
-        if ( -not [System.String]::IsNullOrEmpty( $_.($MigrationType + 'TestIPAddress') ) ) {
-            Write-Host "  Test IPAddress:`t`t" $_.($MigrationType + 'TestIPAddress')
-            Write-Host "  Test SubnetMask:`t" $_.($MigrationType + 'TestSubnetMask')
-            Write-Host "  Test Gateway:`t`t" $_.($MigrationType + 'TestGateway')
-            Write-Host "  Test DNS1:`t`t`t" $_.($MigrationType + 'TestDNS1')
-            Write-Host "  Test DNS2:`t`t`t" $_.($MigrationType + 'TestDNS2')
-            Write-Host "  Test DNSSuffix:`t`t" $_.DNSSuffix
-        }
-    } catch {
-        Throw ("***ERROR with $VMName : " + $Error[0])
     }
        
     #Override Network
@@ -226,10 +257,16 @@ $NSMData | ForEach-Object {
     $VMCount++
 }
 
+if ($VPGErrors -gt 0) {
+    Write-Host -ForegroundColor Red "`n**********************************************"
+    Write-Host -ForegroundColor Red "*** VPG has $VPGErrors errors"
+    Write-Host -ForegroundColor Red "**********************************************"
+}
+
 if ($VMErrors -gt 0) {
-    Write-Host "`n**********************************************"
-    Write-Host "*** $VMCount VMs for this group with $VMErrors errors"
-    Write-Host "**********************************************"
+    Write-Host -ForegroundColor Red "`n**********************************************"
+    Write-Host -ForegroundColor Red "*** $VMCount VMs for this group with $VMErrors errors"
+    Write-Host -ForegroundColor Red "**********************************************"
 } else {
     Write-Host "`n$VMCount VMs for this group"
 }

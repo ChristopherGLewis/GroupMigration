@@ -56,8 +56,6 @@ History:
     1.0 Initial create
     1.1 Dynamic Datastores
     1.2 Validation of rights to NSM/VPG files, Zerto rights
-
-
 #>
 
 #Requires -Version 5.0
@@ -145,7 +143,7 @@ Set-Item ENV:ZertoPort $ZertoSourceServerPort
 Set-ZertoAuthToken -ZertoUser $ZertoUser
 
 Try {
-    Get-ZertoLocalSite
+    $LocalSite = Get-ZertoLocalSite
 } catch {
     throw "Cound not log onto ZertoServer at '$ZertoSourceServer'"
     Return
@@ -158,7 +156,7 @@ If ( -not (Test-Path $NSMSource) ) {
     throw "Cound not find NSMSource at '$NSMSource'"
     Return
 }
-If ( -not (Test-Path $NSMSource) ) {
+If ( -not (Test-Path $VPGSource) ) {
     throw "Cound not find VPGSource at '$VPGSource'"
     Return
 }
@@ -215,47 +213,88 @@ Write-Host "  DefaultFolder:`t $DefaultFolder"
 #Create our array of VMs'
 $AllVMS = @()
 $NSMData | ForEach-Object {
-    $VMName =  $_.Name
+    $ThisVM = $_  #Switch breaks $_
+    $VMName =  $ThisVM.Name
+
+    Switch ($MigrationType) {
+        'Mig' { 
+            $IPAddress = $ThisVM.($MigrationType + 'EventIPAddress')
+            $SubnetMask = $ThisVM.($MigrationType + 'EventSubnetMask')
+            $Gateway = $ThisVM.($MigrationType + 'EventGateway')
+            $DNS1 = $ThisVM.($MigrationType + 'EventDNS1')
+            $DNS2 = $ThisVM.($MigrationType + 'EventDNS2')
+            $TestIPAddress = $ThisVM.($MigrationType + 'TestIPAddress')
+            $TestSubnetMask = $ThisVM.($MigrationType + 'TestSubnetMask')
+            $TestGateway = $ThisVM.($MigrationType + 'TestGateway')
+            $TestDNS1 = $ThisVM.($MigrationType + 'TestDNS1')
+            $TestDNS2 = $ThisVM.($MigrationType + 'TestDNS2')
+         }
+        'DR'  { 
+            $IPAddress = $ThisVM.($MigrationType + 'EventIPAddress')
+            $SubnetMask = $ThisVM.($MigrationType + 'EventSubnetMask')
+            $Gateway = $ThisVM.($MigrationType + 'EventGateway')
+            $DNS1 = $ThisVM.($MigrationType + 'EventDNS1')
+            $DNS2 = $ThisVM.($MigrationType + 'EventDNS2')
+            $TestIPAddress = $ThisVM.($MigrationType + 'TestIPAddress')
+            $TestSubnetMask = $ThisVM.($MigrationType + 'TestSubnetMask')
+            $TestGateway = $ThisVM.($MigrationType + 'TestGateway')
+            $TestDNS1 = $ThisVM.($MigrationType + 'TestDNS1')
+            $TestDNS2 = $ThisVM.($MigrationType + 'TestDNS2')
+         }
+        'FP'  { 
+            $IPAddress = $ThisVM.($MigrationType + 'FailbackIPAddress')
+            $SubnetMask = $ThisVM.($MigrationType + 'FailbackSubnetMask')
+            $Gateway = $ThisVM.($MigrationType + 'FailbackGateway')
+            $DNS1 = $ThisVM.($MigrationType + 'FailbackDNS1')
+            $DNS2 = $ThisVM.($MigrationType + 'FailbackDNS2')
+            $TestIPAddress = $Null
+            $TestSubnetMask = $Null
+            $TestGateway = $Null
+            $TestDNS1 = $Null
+            $TestDNS2 = $Null
+         }
+    }
+    $DNSSuffix = $_.DNSSuffix
 
     Write-Host "Adding VM: " $VMName
-    Write-Host "  IPAddress`t`t" $_.($MigrationType + 'EventIPAddress')
-    Write-Host "  SubnetMask`t" $_.($MigrationType + 'EventSubnetMask')
-    Write-Host "  Gateway`t`t" $_.($MigrationType + 'EventGateway')
-    Write-Host "  DNS1`t`t`t" $_.($MigrationType + 'EventDNS1')
-    Write-Host "  DNS2`t`t`t" $_.($MigrationType + 'EventDNS2')
-    Write-Host "  DNSSuffix`t`t" $_.DNSSuffix
+    Write-Host "  IPAddress`t`t" $IPAddress
+    Write-Host "  SubnetMask`t" $SubnetMask
+    Write-Host "  Gateway`t`t" $Gateway
+    Write-Host "  DNS1`t`t`t" $DNS1
+    Write-Host "  DNS2`t`t`t" $DNS2
+    Write-Host "  DNSSuffix`t`t" $DNSSuffix
 
     #Throw on error - 
     try {
-        if ( [System.String]::IsNullOrEmpty( $_.($MigrationType + 'TestIPAddress') ) ) {
+        if ( [System.String]::IsNullOrEmpty( $TestIPAddress ) ) {
             $IP = New-ZertoVPGFailoverIPAddress -NICName 'Network adapter 1' `
-                                        -IPAddress  $_.($MigrationType + 'EventIPAddress') `
-                                        -SubnetMask $_.($MigrationType + 'EventSubnetMask') `
-                                        -Gateway    $_.($MigrationType + 'EventGateway') `
-                                        -DNS1       $_.($MigrationType + 'EventDNS1') `
-                                        -DNS2       $_.($MigrationType + 'EventDNS2') `
-                                        -DNSSuffix  $_.DNSSuffix
+                                        -IPAddress  $IPAddress `
+                                        -SubnetMask $SubnetMask `
+                                        -Gateway    $Gateway `
+                                        -DNS1       $DNS1 `
+                                        -DNS2       $DNS2 `
+                                        -DNSSuffix  $DNSSuffix
         } else {
-            Write-Host "  Test IPAddress:`t`t" $_.($MigrationType + 'TestIPAddress')
-            Write-Host "  Test SubnetMask:`t" $_.($MigrationType + 'TestSubnetMask')
-            Write-Host "  Test Gateway:`t`t" $_.($MigrationType + 'TestGateway')
-            Write-Host "  Test DNS1:`t`t`t" $_.($MigrationType + 'TestDNS1')
-            Write-Host "  Test DNS2:`t`t`t" $_.($MigrationType + 'TestDNS2')
-            Write-Host "  Test DNSSuffix:`t`t" $_.DNSSuffix
+            Write-Host "  Test IPAddress:`t`t" $TestIPAddress
+            Write-Host "  Test SubnetMask:`t" $TestSubnetMask
+            Write-Host "  Test Gateway:`t`t" $TestGateway
+            Write-Host "  Test DNS1:`t`t`t" $TestDNS1
+            Write-Host "  Test DNS2:`t`t`t" $TestDNS2
+            Write-Host "  Test DNSSuffix:`t`t" $DNSSuffix
 
             $IP = New-ZertoVPGFailoverIPAddress -NICName 'Network adapter 1' `
-                                        -IPAddress  $_.($MigrationType + 'EventIPAddress') `
-                                        -SubnetMask $_.($MigrationType + 'EventSubnetMask') `
-                                        -Gateway    $_.($MigrationType + 'EventGateway') `
-                                        -DNS1       $_.($MigrationType + 'EventDNS1') `
-                                        -DNS2       $_.($MigrationType + 'EventDNS2') `
-                                        -DNSSuffix  $_.DNSSuffix `
-                                        -TestIPAddress  $_.($MigrationType + 'TestIPAddress') `
-                                        -TestSubnetMask $_.($MigrationType + 'TestSubnetMask') `
-                                        -TestGateway    $_.($MigrationType + 'TestGateway') `
-                                        -TestDNS1       $_.($MigrationType + 'TestDNS1') `
-                                        -TestDNS2       $_.($MigrationType + 'TestDNS2') `
-                                        -TestDNSSuffix  $_.DNSSuffix
+                                        -IPAddress  $IPAddress `
+                                        -SubnetMask $SubnetMask `
+                                        -Gateway    $Gateway `
+                                        -DNS1       $DNS1 `
+                                        -DNS2       $DNS2 `
+                                        -DNSSuffix  $DNSSuffix `
+                                        -TestIPAddress  $TestIPAddress `
+                                        -TestSubnetMask $TestSubnetMask `
+                                        -TestGateway    $TestGateway `
+                                        -TestDNS1       $TestDNS1 `
+                                        -TestDNS2       $TestDNS2 `
+                                        -TestDNSSuffix  $DNSSuffix
         }
     } catch {
         Throw ("***ERROR with $VMName : " + $Error[0])
