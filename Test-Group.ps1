@@ -31,7 +31,7 @@ History:
     1.0 Initial create
     1.1 Added used IP check
     1.2 Added better layout for test results
-
+    1.3 Added Folder 
 #>
 
 #Requires -Version 5.0
@@ -85,8 +85,7 @@ function Get-Datastore {
     return $DatastoreName
 }
 
-
-$ScriptVersion = "1.2"
+$ScriptVersion = "1.3"
 
 if ( $ver) {
     Write-Host ($MyInvocation.MyCommand.Name + " - Version $ScriptVersion")
@@ -149,7 +148,6 @@ if ( [System.String]::IsNullOrEmpty( $TestNetwork ) ) { Write-Host -ForegroundCo
 Write-Host -NoNewline "  DefaultFolder:`t $DefaultFolder"
 if ( [System.String]::IsNullOrEmpty( $DefaultFolder ) ) { Write-Host -ForegroundColor Red "  *** Invalid HostClusterName $DefaultFolder"; $VPGErrors++} else {Write-host ""}
 
-
 #Create our array of VMs'
 $VMCount = 0
 $VMErrors = 0
@@ -195,8 +193,13 @@ $NSMData | ForEach-Object {
             $TestDNS2 = $Null
          }
     }
-    $DNSSuffix = $_.DNSSuffix
 
+    $DNSSuffix = $_.DNSSuffix
+    if ( -not [System.String]::IsNullOrEmpty( $_.($MigrationType + 'VPG:ZertoRecoveryFolderOverride') ) ) {
+        $OverrideFolder =  ( $_.($MigrationType + 'VPG:ZertoRecoveryFolderOverride') )
+    } else {
+        $OverrideFolder = [string]::Empty
+    }
     Write-Host "Adding VM: " $VMName
     Write-Host -NoNewline "  IPAddress`t`t" $IPAddress
     if ( [System.String]::IsNullOrEmpty( $IPAddress ) ) { Write-Host -ForegroundColor Red "  *** Invalid IPAddress $IPAddress"; $VMErrors++} else {Write-host ""}
@@ -210,6 +213,7 @@ $NSMData | ForEach-Object {
     if ( [System.String]::IsNullOrEmpty( $DNS2 ) ) { Write-Host -ForegroundColor Red "  *** Invalid DNS2 $DNS2"; $VMErrors++} else {Write-host ""}
     Write-Host -NoNewline "  DNSSuffix`t`t" $DNSSuffix
     if ( [System.String]::IsNullOrEmpty( $DNSSuffix ) ) { Write-Host -ForegroundColor Red "  *** Invalid DNSSuffix $DNSSuffix"; $VMErrors++} else {Write-host ""}
+    Write-Host "  OverrideFolder`t`t" $OverrideFolder
 
     if ( -not [System.String]::IsNullOrEmpty( $TestIPAddress ) ) {
         Write-Host -NoNewline "  Test IPAddress:`t`t" $TestIPAddress
