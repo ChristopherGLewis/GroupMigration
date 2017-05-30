@@ -42,6 +42,31 @@ param(
     [parameter(Mandatory = $true,  ParameterSetName = 'Version', HelpMessage = "Version")] [Switch] $Ver
 )
 
+function Get-SourceServer {
+    param (
+        [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "Source Site Name")] [String] $SourceSiteName
+    )
+    #Guess at our datastore
+    switch ($SourceSiteName) {
+        'CHAPDA' {
+            $SourceServer = "chapda3zvm01.ad.tiaa-cref.org"
+        }
+        'DENPDA' {
+            $SourceServer = "denpda3zvm01.ad.tiaa-cref.org"
+        }
+        'DENPDB' {
+            $SourceServer = "denpdb3zvm01.ad.tiaa-cref.org"
+        }
+        'Zerto-IL1' {
+            $SourceServer = "il1zerto.nuveen.com"
+        }
+        default {
+            throw "Invalid Source Site"
+        }
+    }
+    return $SourceServer
+}
+
 function Get-Datastore {
     param (
         [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "Recovery Site Name")] [String] $RecoverySiteName,
@@ -107,6 +132,11 @@ If ( -not (Test-Path $VPGSource) ) {
 $VPGData = Import-Csv -Path $VPGSource | Where-Object {$_.ZertoVPG -eq $GroupName}
 If ($VPGData -eq $null) { throw "Invalid VPG Group Name" }
 
+$VPGSourceSiteName = $VPGData.ZertoSourceSiteName
+If ( ( [String]::IsNullOrEmpty( $VPGSourceSiteName ) ) ) { throw "No Source Site name found for VPG Group '$GroupName'" }
+#Log Into Zerto
+$VPGSourceServer = Get-SourceServer -SourceSiteName $VPGSourceSiteName
+
 #This VPG's NSM
 Switch ($MigrationType) {
     'Mig' { $NSMData = Import-Csv -Path $NSMSource | Where-Object {$_.MigVPG -eq $GroupName} }
@@ -134,7 +164,9 @@ $DefaultFolder = $VPGData.ZertoRecoveryFolder
 
 #Display some VPG Information
 $VPGErrors = 0
-Write-Host "Creating VPG '$VPGName' with destination '$RecoverySiteName'"
+Write-Host "Creating VPG '$VPGName' with source '$VPGSourceSiteName' destination '$RecoverySiteName'"
+if ( $VPGSourceSiteName -eq  $RecoverySiteName) { Write-Host -ForegroundColor Red "  *** Source and Destination cannot be the same"; $VPGErrors++} 
+Write-Host "  SourceServer:`t`t $VPGSourceServer"
 Write-Host -NoNewline "  Cluster:`t`t`t $HostClusterName"
 if ( [System.String]::IsNullOrEmpty( $HostClusterName ) ) { Write-Host -ForegroundColor Red "  *** Invalid HostClusterName $HostClusterName"; $VPGErrors++} else {Write-host ""}
 Write-Host -NoNewline "  DatastoreCluster:`t $DatastoreClusterName"
@@ -146,7 +178,8 @@ if ( [System.String]::IsNullOrEmpty( $Network ) ) { Write-Host -ForegroundColor 
 Write-Host -NoNewline "  TestNetwork:`t`t $TestNetwork"
 if ( [System.String]::IsNullOrEmpty( $TestNetwork ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestNetwork $TestNetwork"; $VPGErrors++} else {Write-host ""}
 Write-Host -NoNewline "  DefaultFolder:`t $DefaultFolder"
-if ( [System.String]::IsNullOrEmpty( $DefaultFolder ) ) { Write-Host -ForegroundColor Red "  *** Invalid HostClusterName $DefaultFolder"; $VPGErrors++} else {Write-host ""}
+if ( [System.String]::IsNullOrEmpty( $DefaultFolder ) ) { Write-Host -ForegroundColor Red "  *** Invalid DefaultFolder $DefaultFolder"; $VPGErrors++} else {Write-host ""}
+
 
 #Create our array of VMs'
 $VMCount = 0
@@ -200,33 +233,33 @@ $NSMData | ForEach-Object {
     } else {
         $OverrideFolder = [string]::Empty
     }
-    Write-Host "Adding VM: " $VMName
-    Write-Host -NoNewline "  IPAddress`t`t" $IPAddress
+    Write-Host "`nAdding VM: " $VMName
+    Write-Host -NoNewline "  IPAddress:`t`t" $IPAddress
     if ( [System.String]::IsNullOrEmpty( $IPAddress ) ) { Write-Host -ForegroundColor Red "  *** Invalid IPAddress $IPAddress"; $VMErrors++} else {Write-host ""}
-    Write-Host -NoNewline "  SubnetMask`t" $SubnetMask
+    Write-Host -NoNewline "  SubnetMask:`t`t" $SubnetMask
     if ( [System.String]::IsNullOrEmpty( $SubnetMask ) ) { Write-Host -ForegroundColor Red "  *** Invalid SubnetMask $SubnetMask"; $VMErrors++} else {Write-host ""}
-    Write-Host -NoNewline "  Gateway`t`t" $Gateway
+    Write-Host -NoNewline "  Gateway:`t`t`t" $Gateway
     if ( [System.String]::IsNullOrEmpty( $Gateway ) ) { Write-Host -ForegroundColor Red "  *** Invalid Gateway $Gateway"; $VMErrors++} else {Write-host ""}
-    Write-Host -NoNewline "  DNS1`t`t`t" $DNS1
+    Write-Host -NoNewline "  DNS1:`t`t`t`t" $DNS1
     if ( [System.String]::IsNullOrEmpty( $DNS1 ) ) { Write-Host -ForegroundColor Red "  *** Invalid DNS1 $DNS1"; $VMErrors++} else {Write-host ""}
-    Write-Host -NoNewline "  DNS2`t`t`t" $DNS2
+    Write-Host -NoNewline "  DNS2:`t`t`t`t" $DNS2
     if ( [System.String]::IsNullOrEmpty( $DNS2 ) ) { Write-Host -ForegroundColor Red "  *** Invalid DNS2 $DNS2"; $VMErrors++} else {Write-host ""}
-    Write-Host -NoNewline "  DNSSuffix`t`t" $DNSSuffix
+    Write-Host -NoNewline "  DNSSuffix:`t`t" $DNSSuffix
     if ( [System.String]::IsNullOrEmpty( $DNSSuffix ) ) { Write-Host -ForegroundColor Red "  *** Invalid DNSSuffix $DNSSuffix"; $VMErrors++} else {Write-host ""}
-    Write-Host "  OverrideFolder`t`t" $OverrideFolder
+    Write-Host "  OverrideFolder:`t" $OverrideFolder
 
     if ( -not [System.String]::IsNullOrEmpty( $TestIPAddress ) ) {
-        Write-Host -NoNewline "  Test IPAddress:`t`t" $TestIPAddress
+        Write-Host -NoNewline "  Test IPAddress:`t" $TestIPAddress
         if ( [System.String]::IsNullOrEmpty( $TestIPAddress ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestIPAddress $TestIPAddress"; $VMErrors++} else {Write-host ""}
-        Write-Host -NoNewline "  Test SubnetMask:`t" $TestSubnetMask
+        Write-Host -NoNewline "  Test SubnetMask:`t`t" $TestSubnetMask
         if ( [System.String]::IsNullOrEmpty( $TestSubnetMask ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestSubnetMask $TestSubnetMask"; $VMErrors++} else {Write-host ""}
-        Write-Host -NoNewline "  Test Gateway:`t`t" $TestGateway
+        Write-Host -NoNewline "  Test Gateway:`t`t`t" $TestGateway
         if ( [System.String]::IsNullOrEmpty( $TestGateway ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestGateway $TestGateway"; $VMErrors++} else {Write-host ""}
-        Write-Host -NoNewline "  Test DNS1:`t`t`t" $TestDNS1
+        Write-Host -NoNewline "  Test DNS1:`t`t`t`t" $TestDNS1
         if ( [System.String]::IsNullOrEmpty( $TestDNS1 ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestDNS1 $TestDNS1"; $VMErrors++} else {Write-host ""}
-        Write-Host -NoNewline "  Test DNS2:`t`t`t" $TestDNS2
+        Write-Host -NoNewline "  Test DNS2:`t`t`t`t" $TestDNS2
         if ( [System.String]::IsNullOrEmpty( $TestDNS2 ) ) { Write-Host -ForegroundColor Red "  *** Invalid TestDNS2 $TestDNS2"; $VMErrors++} else {Write-host ""}
-        Write-Host -NoNewline "  Test DNSSuffix:`t`t" $DNSSuffix
+        Write-Host -NoNewline "  Test DNSSuffix:`t" $DNSSuffix
         if ( [System.String]::IsNullOrEmpty( $DNSSuffix ) ) { Write-Host -ForegroundColor Red "  *** Invalid DNSSuffix $DNSSuffix"; $VMErrors++} else {Write-host ""}
     }
 
@@ -242,21 +275,21 @@ $NSMData | ForEach-Object {
     #Override Network
     if ( -not [System.String]::IsNullOrEmpty( $_.($MigrationType + 'VPG:ZertoFailoverNetworkOverride') ) ) {
         $OverrideNetwork =  $_.($MigrationType + 'VPG:ZertoFailoverNetworkOverride')
-        Write-Host "  * Overriding Network to: $OverrideNetwork"
+        Write-Host -ForegroundColor yellow "  Overriding Network: $OverrideNetwork"
     }
     #if ( -not [System.String]::IsNullOrEmpty( $_.($MigrationType + 'VPG:ZertoTestNetworkOverride') ) ) {
     #    $OverrideTestNetwork =  $_.($MigrationType + 'VPG:ZertoTestNetworkOverride')
-    #    Write-Host "  *** Overriding Test Network to: $OverrideTestNetwork"
+    #    Write-Host -ForegroundColor yellow "  Overriding Test Network to: $OverrideTestNetwork"
     #}
 
     #Set our datastore based off of $VPGData.ZertoRecoverySiteName
     $VMDatastore = Get-Datastore -RecoverySiteName $RecoverySiteName -ZertoDatastoreClusterName $DatastoreClusterName
-    Write-Host "  VM Datastore:`t $VMDatastore"
+    Write-Host "  VM Datastore:`t`t $VMDatastore"
 
     #Override folder
     if ( -not [System.String]::IsNullOrEmpty( $_.($MigrationType + 'VPG:ZertoRecoveryFolderOverride') ) ) {
         $OverrideFolder =  ( $_.($MigrationType + 'VPG:ZertoRecoveryFolderOverride') )
-        Write-Host "  * Overriding Folder to: $OverrideFolder"
+        Write-Host -ForegroundColor yellow "  Overriding Folder: $OverrideFolder"
     }
     $VMCount++
 }

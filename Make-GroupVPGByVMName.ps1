@@ -21,6 +21,9 @@ User for the Zerto source server
 .PARAMETER ZertoSourceServerPort 
 Zerto Source Server port - defaults to 9669
 
+.PARAMETER VMName
+Name of single VM in the above VPG to create VPGByBVMName 
+
 .PARAMETER CommitVPG
 Switch to commit the VPG.  Without this switch, the script just processes without creating the VPG.  It does dump the 
 REST API Json for diagnostics
@@ -61,8 +64,10 @@ History:
 param(
     [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "VPG Group Name")] [String] $GroupName,
     [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "VPG Migration Type")]  [ValidateSet('Mig','DR','FP')] [string] $MigrationType,
+    [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "Zerto Source Server")] [String] $ZertoSourceServer,
     [parameter(Mandatory = $False, ParameterSetName = 'Default', HelpMessage = "Zerto Source Server Port")] [int] $ZertoSourceServerPort = 9669,
-    [parameter(Mandatory = $false,  ParameterSetName = 'Default', HelpMessage = "Zerto Source User")] [String] $ZertoUser,
+    [parameter(Mandatory = $false, ParameterSetName = 'Default', HelpMessage = "Zerto Source User")] [String] $ZertoUser,
+    [parameter(Mandatory = $false, ParameterSetName = 'Default', HelpMessage = "VMName list")] [String[]] $VMList,
     [parameter(Mandatory = $False, ParameterSetName = 'Default', HelpMessage = "Commit VPG")] [Switch] $CommitVPG,
     [parameter(Mandatory = $true,  ParameterSetName = 'Version', HelpMessage = "Version")] [Switch] $Ver
 )
@@ -158,6 +163,18 @@ If ( (Get-Module 'ZertoModule').Version -lt $MinZertoModuleVersion ) {
     Return
 }
 
+#Log Into Zerto
+Set-Item ENV:ZertoServer $ZertoSourceServer
+Set-Item ENV:ZertoPort $ZertoSourceServerPort
+Set-ZertoAuthToken -ZertoUser $ZertoUser
+
+Try {
+    $LocalSite = Get-ZertoLocalSite
+} catch {
+    throw "Could not log onto ZertoServer at '$ZertoSourceServer'"
+    Return
+}
+
 $NSMSource = '\\nuveen.com\Departments\EO\Logs\Servers\NSM.csv'
 $VPGSource = '\\nuveen.com\Departments\EO\Logs\Servers\ZertoVPGs.csv'
 If ( -not (Test-Path $NSMSource) ) {
@@ -175,17 +192,7 @@ If ($VPGData -eq $null) { throw "Invalid VPG Group Name" }
 
 $VPGSourceSiteName = $VPGData.ZertoSourceSiteName
 If ( ( [String]::IsNullOrEmpty( $VPGSourceSiteName ) ) ) { throw "No Source Site name found for VPG Group '$GroupName'" }
-#Log Into Zerto
-$VPGSourceServer = ( Get-SourceServer -SourceSiteName $VPGSourceSiteName ) 
-Set-Item ENV:ZertoServer $VPGSourceServer
-Set-Item ENV:ZertoPort $ZertoSourceServerPort
-Set-ZertoAuthToken -ZertoUser $ZertoUser
-Try {
-    $LocalSite = Get-ZertoLocalSite
-} catch {
-    throw "Cound not log onto ZertoServer at '$ZertoSourceServer'"
-    Return
-}
+
 
 #Load our NSM based off our Group Name
 Switch ($MigrationType) {
@@ -195,6 +202,9 @@ Switch ($MigrationType) {
     Default {throw "Invalid Migration Type '$MigrationType'"}
 }
 If ( ($NSMData -eq $null) -or ($NSMData.Count -eq 0) ) { throw "No VM's for VPG Group '$GroupName'" }
+
+#Filter by VMList
+If ( $VMList ) { $NSMData = $NSMData | Where-Object { $_.Name -in $VMList } }
 
 $VPGName = $VPGData.ZertoVPG
 If ([string]::IsNullOrEmpty( $VPGData.ZertoReplicationPriority) ) {
@@ -238,7 +248,7 @@ Write-Host "  TestNetwork:`t`t $TestNetwork"
 Write-Host "  DefaultFolder:`t $DefaultFolder"
 
 #Create our array of VMs'
-$AllVMS = @()
+#$AllVMS = @()
 $NSMData | ForEach-Object {
     $ThisVM = $_  #Switch breaks $_
     $VMName =  $ThisVM.Name
@@ -284,12 +294,12 @@ $NSMData | ForEach-Object {
     $DNSSuffix = $_.DNSSuffix
 
     Write-Host "Adding VM: " $VMName
-    Write-Host "  IPAddress:`t`t" $IPAddress
+    Write-Host "  IPAddress:`t" $IPAddress
     Write-Host "  SubnetMask:`t" $SubnetMask
     Write-Host "  Gateway:`t`t" $Gateway
     Write-Host "  DNS1:`t`t`t" $DNS1
     Write-Host "  DNS2:`t`t`t" $DNS2
-    Write-Host "  DNSSuffix:`t`t" $DNSSuffix
+    Write-Host "  DNSSuffix:`t" $DNSSuffix
 
     #Throw on error - 
     try {
@@ -346,7 +356,7 @@ $NSMData | ForEach-Object {
     Write-Host "  VM Datastore:`t $VMDatastore"
 
     $Recovery = New-ZertoVPGVMRecovery -FolderIdentifier $DefaultFolderID `
-                         -DatastoreIdentifier (Get-ZertoSiteDatastoreID -ZertoSiteIdentifier $RecoverySiteID -DatastoreName $VMDatastore)
+                         -DatastoreIdentifier (Get-ZertoSiteDatastoreID -ZertoSiteIdentifier $RecoverySiteID -DatastoreName $VMDatastore) 
 
     #Override folder
     if ( -not [System.String]::IsNullOrEmpty( $_.($MigrationType + 'VPG:ZertoRecoveryFolderOverride') ) ) {
@@ -355,44 +365,44 @@ $NSMData | ForEach-Object {
         $Recovery.FolderIdentifier = Get-ZertoSiteFolderID  -ZertoSiteIdentifier $RecoverySiteID -FolderName $OverrideFolder
     }
 
-    $VM = New-ZertoVPGVirtualMachine -VMName $_.Name  -VPGFailoverIPAddress $IP -VPGVMRecovery $Recovery
-    $AllVMS += $VM
-}
+    $VM = New-ZertoVPGVirtualMachine -VMName $_.Name  -VPGFailoverIPAddress $IP -VPGVMRecovery $Recovery 
+    #$AllVMS += $VM
 
-Write-Host ("Adding " + $AllVMS.Count + " VMs")
-Write-Host ("--Errors after this point are Zerto errors, ie 'VM was not found' indicates Zerto can't find the server in that site") -ForegroundColor Cyan
+    Write-Host ("Creating VPG By VMName " + $_.Name)
+    Write-Host ("-- The next error could be a Zerto error, ie 'VM was not found' indicates Zerto can't find the server in that site") -ForegroundColor Cyan
 
-# Create our VPG
-If (-not $CommitVPG) {
-    try {
-        $Result = Add-ZertoVPG -Priority $Priority  `
-                    -VPGName $VPGName `
-                    -RecoverySiteName $RecoverySiteName `
-                    -ClusterName  $HostClusterName `
-                    -FailoverNetwork  $Network  `
-                    -TestNetwork $TestNetwork `
-                    -DatastoreName $DatastoreName `
-                    -JournalUseDefault:$true `
-                    -Folder $DefaultFolder `
-                    -VPGVirtualMachines $AllVMS `
-                    -DumpJSON
+    # Create our VPG
+    If (-not $CommitVPG) {
+        try {
+            $Result = Add-ZertoVPG -Priority $Priority  `
+                        -VPGName ($VPGName + "-" +  $_.Name) `
+                        -RecoverySiteName $RecoverySiteName `
+                        -ClusterName  $HostClusterName `
+                        -FailoverNetwork  $Network  `
+                        -TestNetwork $TestNetwork `
+                        -DatastoreName $DatastoreName `
+                        -JournalUseDefault:$true `
+                        -Folder $DefaultFolder `
+                        -VPGVirtualMachines $VM `
+                        -DumpJSON
 
-    } catch {
-        Write-Host "Error creating VPG"
-    }
-} else {
-    try {
-        $Result = Add-ZertoVPG -Priority $Priority  `
-                    -VPGName $VPGName `
-                    -RecoverySiteName $RecoverySiteName `
-                    -ClusterName  $HostClusterName `
-                    -FailoverNetwork  $Network  `
-                    -TestNetwork $TestNetwork `
-                    -DatastoreName $DatastoreName `
-                    -JournalUseDefault:$true `
-                    -Folder $DefaultFolder `
-                    -VPGVirtualMachines $AllVMS 
-    } catch {
-        Write-Host "Error creating VPG"
+        } catch {
+            Write-Host "Error creating VPG"
+        }
+    } else {
+        try {
+            $Result = Add-ZertoVPG -Priority $Priority  `
+                        -VPGName ($VPGName + "-" +  $_.Name) `
+                        -RecoverySiteName $RecoverySiteName `
+                        -ClusterName  $HostClusterName `
+                        -FailoverNetwork  $Network  `
+                        -TestNetwork $TestNetwork `
+                        -DatastoreName $DatastoreName `
+                        -JournalUseDefault:$true `
+                        -Folder $DefaultFolder `
+                        -VPGVirtualMachines $VM 
+        } catch {
+            Write-Host "Error creating VPG"
+        }
     }
 }

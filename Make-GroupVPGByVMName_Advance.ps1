@@ -3,7 +3,7 @@
 Creates a Zerto VPG for the given migration group
 
 .DESCRIPTION
-The Make-GroupVPG.ps1 script creates a VPG for a given migration group.  The Script reads the VPG from the VPGList and then 
+The Make-GroupVPGByName_Advanced.ps1 script creates a VPG per VM for a given migration group.  The Script reads the VPG from the VPGList and then 
 processes each VM in the NSM to grab destination IP information.
 
 .PARAMETER GroupName 
@@ -21,6 +21,9 @@ User for the Zerto source server
 .PARAMETER ZertoSourceServerPort 
 Zerto Source Server port - defaults to 9669
 
+.PARAMETER VMName
+Name of single VM in the above VPG to create VPGByBVMName 
+
 .PARAMETER CommitVPG
 Switch to commit the VPG.  Without this switch, the script just processes without creating the VPG.  It does dump the 
 REST API Json for diagnostics
@@ -31,29 +34,28 @@ Displays the version number and exits
 .EXAMPLE 
 #This DOES NOT commit the VPG
 
-.\Make-GroupVPG.ps1 -GroupName 'GROUP01-CHAPDA' `
+.\Make-GroupVPGByVMName_Advanced.ps1 -GroupName 'GROUP01-CHAPDA' `
                     -MigrationType Mig `
-                    -ZertoSourceServer 'il1zerto.nuveen.com' `
-                    -ZertoUser 'nuveen\e_lewiCG'
+                    -ZertoUser 'nuveen\e_lewiCG' `
+                    -vCenterSourceUser 'nuveen\e_lewiCG' `
+                    -vCenterDestUser 'nuveen\e_lewiCG'
 
 .EXAMPLE 
 #This commits the VPG
 
-.\Make-GroupVPG.ps1 -GroupName 'GROUP01-CHAPDA' `
+.\Make-GroupVPGByVMName_Advanced.ps1 -GroupName 'GROUP01-CHAPDA' `
                     -MigrationType Mig `
-                    -ZertoSourceServer 'il1zerto.nuveen.com' `
                     -ZertoUser 'nuveen\e_lewiCG' `
+                    -vCenterSourceUser 'nuveen\e_lewiCG' `
+                    -vCenterDestUser 'nuveen\e_lewiCG' `
                     -CommitVPG
 
 .NOTES
 Author: Chris Lewis
-Date: 2017-03-02
-Version: 1.3
+Date: 2017-05-23
+Version: 1.0
 History:
     1.0 Initial create
-    1.1 Dynamic Datastores
-    1.2 Validation of rights to NSM/VPG files, Zerto rights
-    1.3 Switched to use SourceSite from VPG Table
 #>
 
 #Requires -Version 5.0
@@ -61,19 +63,22 @@ History:
 param(
     [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "VPG Group Name")] [String] $GroupName,
     [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "VPG Migration Type")]  [ValidateSet('Mig','DR','FP')] [string] $MigrationType,
-    [parameter(Mandatory = $False, ParameterSetName = 'Default', HelpMessage = "Zerto Source Server Port")] [int] $ZertoSourceServerPort = 9669,
-    [parameter(Mandatory = $false,  ParameterSetName = 'Default', HelpMessage = "Zerto Source User")] [String] $ZertoUser,
+    [parameter(Mandatory = $false, ParameterSetName = 'Default', HelpMessage = "Zerto Source User")] [String] $ZertoUser,
+    [parameter(Mandatory = $false, ParameterSetName = 'Default', HelpMessage = "vCenter Source User")] [String] $vCenterSourceUser,
+    [parameter(Mandatory = $false, ParameterSetName = 'Default', HelpMessage = "vCenter Dest User")] [String] $vCenterDestUser,
+    [parameter(Mandatory = $false, ParameterSetName = 'Default', HelpMessage = "VMName list")] [String[]] $VMList,
     [parameter(Mandatory = $False, ParameterSetName = 'Default', HelpMessage = "Commit VPG")] [Switch] $CommitVPG,
     [parameter(Mandatory = $true,  ParameterSetName = 'Version', HelpMessage = "Version")] [Switch] $Ver
 )
 #Add-Type -TypeDefinition "public enum VPGMigrationType { MigVPG, DRVPG, FPVPG }"
 
-function Get-SourceServer {
+
+function Get-ZertoServer {
     param (
-        [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "Source Site Name")] [String] $SourceSiteName
+        [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "Zerto Site Name")] [String] $ZertoSiteName  
     )
-    #Guess at our datastore
-    switch ($SourceSiteName) {
+    #Get our Zerto Server based off site name
+    switch ($ZertoSiteName) {
         'CHAPDA' {
             $SourceServer = "chapda3zvm01.ad.tiaa-cref.org"
         }
@@ -87,13 +92,85 @@ function Get-SourceServer {
             $SourceServer = "il1zerto.nuveen.com"
         }
         default {
-            throw "Invalid Source Site"
+            throw "Invalid Zerto Site Name"
         }
     }
     return $SourceServer
 }
 
-function Get-Datastore {
+function Get-vCenterServer {
+    param (
+        [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "Site Name")] [String] $ZertoSiteName
+    )
+    #Get our dest vCenter based of Dest site name
+    switch ($ZertoSiteName) {
+        'CHAPDA' {
+            $vCenterServer = "CHAPDA3VI05.ad.tiaa-cref.org"
+        }
+        'DENPDA' {
+            $vCenterServer = "DENPDA3VI05.ad.tiaa-cref.org"
+        }
+        'DENPDB' {
+            $vCenterServer = "DENPDB3VI07.ad.tiaa-cref.org"
+        }
+        'Zerto-IL1' {
+            $vCenterServer = "IL1vc.nuveen.com"
+        }
+        default {
+            throw "Invalid Site"
+        }
+    }
+    return $vCenterServer
+}
+
+Function Load-DatatoreHash {
+    param (
+        [parameter(Mandatory = $true, ParameterSetName = 'Default', HelpMessage = "Recovery Site Name")]    [String] $RecoverySiteName
+    )
+
+    #Load our datastore choices 
+    $DatastoreHash = @{}
+    switch ($RecoverySiteName) {
+        'CHAPDA' {
+            $DatastoreCluster = 'CHAPDA3Z_MNA01'
+        }
+        'DENPDA' {
+            $DatastoreCluster = 'DENPDA3Z_MNA01'
+        }
+        'DENPDB' {
+            $DatastoreCluster = 'DENPDB3Z_MNA01'
+        }
+        'Zerto-IL1' {
+            $DatastoreCluster = 'IL1VSP1_DUS_PRD_ZERTO_FAILBACK'
+        }
+        default {
+            throw "Invalid Remote Site"
+        }
+    }
+
+    #Get all our cluster members
+    Get-DatastoreCluster -Name $DatastoreCluster | Get-Datastore | 
+        ForEach-Object { 
+            $DatastoreHash.Add($_.Name, $_.FreeSpaceGB)
+        }
+
+    #Note this doesn't sort, we'll have to add ($DatastoreHash.GetEnumerator() | sort value -Descending | select -First 1).Name
+    #to get the most free
+    Return $DatastoreHash
+}
+
+function Get-DatastoreMostFree {
+    param (
+        [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "Datastore Hash")] [Hashtable] $DatastoreHash
+    )
+
+    #Pick our datastore
+    $MostFree = ($DatastoreHash.GetEnumerator() | sort value -Descending | select -First 1).Name
+     
+    return $MostFree
+}
+
+function Get-DatastoreRandom {
     param (
         [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "Recovery Site Name")] [String] $RecoverySiteName,
         [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "Recovery Site Name")] [String] $ZertoDatastoreClusterName
@@ -135,7 +212,18 @@ function Get-Datastore {
     return $DatastoreName
 }
 
-$ScriptVersion = "1.3"
+Function Write-DatastoreTable {
+    param (
+        [parameter(Mandatory = $true,  ParameterSetName = 'Default', HelpMessage = "Datastore Hash")] [Hashtable] $DatastoreHash
+    )
+    Write-Host "Datastore Table:"
+    Write-Host "Name                    Value"
+    Write-Host "-------------------- --------"
+    $DatastoreHash.GetEnumerator() | Sort-Object Name | ForEach-Object{  Write-Host  ("{0,-20} {1,8:f2}" -f $_.Name , $_.value)  } 
+    Write-Host ""
+}
+
+$ScriptVersion = "1.0"
 $MinZertoModuleVersion = [Version]"0.9.13"
 
 if ( $ver) {
@@ -148,7 +236,9 @@ if ( $ver) {
 
 #AutoImport doesn't work for Script modules
 Import-Module ZertoModule
-#Import-Module C:\Scripts\Zerto\ZertoModule\ZertoModule.psd1
+
+Import-Module VMware.VimAutomation.Core
+
 If ((get-module -Name 'ZertoModule') -eq $null ) {
     throw "Could not find ZertoModule - please install it first via 'Install-Module -Name ZertoModule'"
     Return
@@ -158,32 +248,58 @@ If ( (Get-Module 'ZertoModule').Version -lt $MinZertoModuleVersion ) {
     Return
 }
 
-$NSMSource = '\\nuveen.com\Departments\EO\Logs\Servers\NSM.csv'
+#Read our VPG List
 $VPGSource = '\\nuveen.com\Departments\EO\Logs\Servers\ZertoVPGs.csv'
-If ( -not (Test-Path $NSMSource) ) {
-    throw "Cound not find NSMSource at '$NSMSource'"
-    Return
-}
 If ( -not (Test-Path $VPGSource) ) {
     throw "Cound not find VPGSource at '$VPGSource'"
     Return
 }
-
 #Load the VPG List to get our VPG before NSM.  This allows authentication faster
 $VPGData = Import-Csv -Path $VPGSource | Where-Object {$_.ZertoVPG -eq $GroupName}
 If ($VPGData -eq $null) { throw "Invalid VPG Group Name" }
-
 $VPGSourceSiteName = $VPGData.ZertoSourceSiteName
 If ( ( [String]::IsNullOrEmpty( $VPGSourceSiteName ) ) ) { throw "No Source Site name found for VPG Group '$GroupName'" }
+$VPGRecoverySiteName = $VPGData.ZertoRecoverySiteName
+If ( ( [String]::IsNullOrEmpty( $VPGRecoverySiteName ) ) ) { throw "No Recovery Site name found for VPG Group '$GroupName'" }
+
 #Log Into Zerto
-$VPGSourceServer = ( Get-SourceServer -SourceSiteName $VPGSourceSiteName ) 
-Set-Item ENV:ZertoServer $VPGSourceServer
-Set-Item ENV:ZertoPort $ZertoSourceServerPort
+$ZertoSourceServer =  (Get-ZertoServer -ZertoSiteName  $VPGSourceSiteName)
+$ZertoSourceServerPort = 9669
+
+Set-Item ENV:ZertoServer $ZertoSourceServer 
+Set-Item ENV:ZertoPort  $ZertoSourceServerPort
 Set-ZertoAuthToken -ZertoUser $ZertoUser
+
 Try {
     $LocalSite = Get-ZertoLocalSite
 } catch {
-    throw "Cound not log onto ZertoServer at '$ZertoSourceServer'"
+    throw "Could not log onto ZertoServer at '$ZertoSourceServer'"
+    Return
+}
+
+#Log into vCenter Source
+$vCenterSourceServer = Get-vCenterServer -ZertoSiteName $VPGSourceSiteName
+try {
+    Connect-VIServer -Server $vCenterSourceServer -Credential (Get-Credential -Message "Enter account for SOURCE vCenter: $vCenterSourceServer" -UserName $vCenterSourceUser) | Out-Null
+} catch {
+    throw "Invalid login to '$vCenterSourceServer'"
+    Return
+
+}
+
+#Log into vCenter Dest
+$vCenterDestServer = Get-vCenterServer -ZertoSiteName  $VPGRecoverySiteName
+try {
+    Connect-VIServer -Server $vCenterDestServer -Credential (Get-Credential -Message "Enter account for DEST vCenter: $vCenterDestServer" -UserName $vCenterDestUser) | Out-Null
+} catch {
+    throw "Invalid login to '$vCenterDestServer'"
+    Return
+
+}
+
+$NSMSource = '\\nuveen.com\Departments\EO\Logs\Servers\NSM.csv'
+If ( -not (Test-Path $NSMSource) ) {
+    throw "Cound not find NSMSource at '$NSMSource'"
     Return
 }
 
@@ -195,6 +311,9 @@ Switch ($MigrationType) {
     Default {throw "Invalid Migration Type '$MigrationType'"}
 }
 If ( ($NSMData -eq $null) -or ($NSMData.Count -eq 0) ) { throw "No VM's for VPG Group '$GroupName'" }
+
+#Filter by VMList
+If ( $VMList ) { $NSMData = $NSMData | Where-Object { $_.Name -in $VMList } }
 
 $VPGName = $VPGData.ZertoVPG
 If ([string]::IsNullOrEmpty( $VPGData.ZertoReplicationPriority) ) {
@@ -211,7 +330,9 @@ $HostClusterID = Get-ZertoSiteHostClusterID -ZertoSiteIdentifier $RecoverySiteID
 $DatastoreClusterName = $VPGData.ZertoDatastoreClusterName
 $DatastoreClusterID  = Get-ZertoSiteDatastoreClusterID -ZertoSiteIdentifier $RecoverySiteID -DatastoreClusterName $DatastoreClusterName
 
-$DatastoreName =  Get-Datastore -RecoverySiteName $RecoverySiteName -ZertoDatastoreClusterName $DatastoreClusterName
+$DatastoreHash = Load-DatatoreHash -RecoverySiteName $RecoverySiteName
+
+$DatastoreName = Get-DatastoreMostFree -DatastoreHash $DatastoreHash
 $DatastoreID  = Get-ZertoSiteDatastoreID -ZertoSiteIdentifier $RecoverySiteID -DatastoreName $DatastoreName
 
 $Network = $VPGData.ZertoFailoverNetwork
@@ -229,7 +350,7 @@ if ( $VPGSourceSiteName -eq  $RecoverySiteName) {
     Write-Host -ForegroundColor Red "  *** Source and Destination cannot be the same"
     Throw ("*** Source and Destination cannot be the same")
 } 
-Write-Host "  SourceServer:`t`t $VPGSourceServer"
+Write-Host "  SourceServer:`t`t $ZertoSourceServer"
 Write-Host "  Cluster:`t`t`t $HostClusterName"
 Write-Host "  DatastoreCluster:`t $DatastoreClusterName"
 Write-Host "  Datastore:`t`t $DatastoreName"
@@ -237,11 +358,17 @@ Write-Host "  Network:`t`t`t $Network"
 Write-Host "  TestNetwork:`t`t $TestNetwork"
 Write-Host "  DefaultFolder:`t $DefaultFolder"
 
+Write-DatastoreTable -DatastoreHash $DatastoreHash
+
+
 #Create our array of VMs'
-$AllVMS = @()
+#$AllVMS = @()
 $NSMData | ForEach-Object {
     $ThisVM = $_  #Switch breaks $_
-    $VMName =  $ThisVM.Name
+    $VMName = $ThisVM.Name
+#    $VMSize = [int]$ThisVM.Disk01GB + [int]$ThisVM.Disk02GB + [int]$ThisVM.Disk03GB + [int]$ThisVM.Disk04GB + [int]$ThisVM.Disk05GB `
+#                + [int]$ThisVM.Disk06GB + [int]$ThisVM.Disk07GB + [int]$ThisVM.Disk08GB + [int]$ThisVM.Disk09GB
+    $VMSize = (Get-VM -Name $VMName  -Server $vCenterSourceServer | Get-HardDisk -Server $vCenterSourceServer | Measure-Object CapacityGB -Sum).Sum
 
     Switch ($MigrationType) {
         'Mig' { 
@@ -283,13 +410,13 @@ $NSMData | ForEach-Object {
     }
     $DNSSuffix = $_.DNSSuffix
 
-    Write-Host "Adding VM: " $VMName
-    Write-Host "  IPAddress:`t`t" $IPAddress
-    Write-Host "  SubnetMask:`t" $SubnetMask
-    Write-Host "  Gateway:`t`t" $Gateway
-    Write-Host "  DNS1:`t`t`t" $DNS1
-    Write-Host "  DNS2:`t`t`t" $DNS2
-    Write-Host "  DNSSuffix:`t`t" $DNSSuffix
+    Write-Host "Adding VM: $VMName"
+    Write-Host "  IPAddress:`t $IPAddress"
+    Write-Host "  SubnetMask:`t $SubnetMask"
+    Write-Host "  Gateway:`t`t $Gateway"
+    Write-Host "  DNS1:`t`t`t $DNS1"
+    Write-Host "  DNS2:`t`t`t $DNS2"
+    Write-Host "  DNSSuffix:`t $DNSSuffix"
 
     #Throw on error - 
     try {
@@ -302,12 +429,12 @@ $NSMData | ForEach-Object {
                                         -DNS2       $DNS2 `
                                         -DNSSuffix  $DNSSuffix
         } else {
-            Write-Host "  Test IPAddress:`t`t" $TestIPAddress
-            Write-Host "  Test SubnetMask:`t" $TestSubnetMask
-            Write-Host "  Test Gateway:`t`t" $TestGateway
-            Write-Host "  Test DNS1:`t`t`t" $TestDNS1
-            Write-Host "  Test DNS2:`t`t`t" $TestDNS2
-            Write-Host "  Test DNSSuffix:`t`t" $DNSSuffix
+            Write-Host "  Test IPAddress:`t`t $TestIPAddress"
+            Write-Host "  Test SubnetMask:`t $TestSubnetMask"
+            Write-Host "  Test Gateway:`t`t $TestGateway"
+            Write-Host "  Test DNS1:`t`t`t $TestDNS1"
+            Write-Host "  Test DNS2:`t`t`t $TestDNS2"
+            Write-Host "  Test DNSSuffix:`t`t $DNSSuffix"
 
             $IP = New-ZertoVPGFailoverIPAddress -NICName 'Network adapter 1' `
                                         -IPAddress  $IPAddress `
@@ -342,11 +469,19 @@ $NSMData | ForEach-Object {
     #}
 
     #Set our datastore based off of $VPGData.ZertoRecoverySiteName
-    $VMDatastore = Get-Datastore -RecoverySiteName $RecoverySiteName -ZertoDatastoreClusterName $DatastoreClusterName
-    Write-Host "  VM Datastore:`t $VMDatastore"
+    #$VMDatastore = Get-DatastoreRandom -RecoverySiteName $RecoverySiteName -ZertoDatastoreClusterName $DatastoreClusterName
+
+    $VMDatastoreName = Get-DatastoreMostFree -DatastoreHash $DatastoreHash
+    #Resize Table
+    $DatastoreHash[$VMDatastoreName] = $DatastoreHash[$VMDatastoreName] - $VMSize
+    If ($DatastoreHash[$VMDatastoreName] -lt 1000) {
+        Write-Host -ForegroundColor Red " **** WARNING - Datastore $VMDatastoreName is at" $DatastoreHash[$VMDatastoreName]
+    }
+    Write-Host "  VM Disk Size:`t $VMSize"
+    Write-Host "  VM Datastore:`t $VMDatastoreName"
 
     $Recovery = New-ZertoVPGVMRecovery -FolderIdentifier $DefaultFolderID `
-                         -DatastoreIdentifier (Get-ZertoSiteDatastoreID -ZertoSiteIdentifier $RecoverySiteID -DatastoreName $VMDatastore)
+                         -DatastoreIdentifier (Get-ZertoSiteDatastoreID -ZertoSiteIdentifier $RecoverySiteID -DatastoreName $VMDatastoreName) 
 
     #Override folder
     if ( -not [System.String]::IsNullOrEmpty( $_.($MigrationType + 'VPG:ZertoRecoveryFolderOverride') ) ) {
@@ -355,44 +490,48 @@ $NSMData | ForEach-Object {
         $Recovery.FolderIdentifier = Get-ZertoSiteFolderID  -ZertoSiteIdentifier $RecoverySiteID -FolderName $OverrideFolder
     }
 
-    $VM = New-ZertoVPGVirtualMachine -VMName $_.Name  -VPGFailoverIPAddress $IP -VPGVMRecovery $Recovery
-    $AllVMS += $VM
+    $VM = New-ZertoVPGVirtualMachine -VMName $_.Name  -VPGFailoverIPAddress $IP -VPGVMRecovery $Recovery 
+    #$AllVMS += $VM
+
+    Write-Host ("Creating VPG By VMName " + $_.Name)
+    Write-Host ("-- The next error could be a Zerto error, ie 'VM was not found' indicates Zerto can't find the server in that site") -ForegroundColor Cyan
+
+    # Create our VPG
+    If (-not $CommitVPG) {
+        try {
+            $Result = Add-ZertoVPG -Priority $Priority  `
+                        -VPGName ($VPGName + "-" +  $_.Name) `
+                        -RecoverySiteName $RecoverySiteName `
+                        -ClusterName  $HostClusterName `
+                        -FailoverNetwork  $Network  `
+                        -TestNetwork $TestNetwork `
+                        -DatastoreName $DatastoreName `
+                        -JournalUseDefault $true `
+                        -Folder $DefaultFolder `
+                        -VPGVirtualMachines $VM `
+                        -DumpJSON
+
+        } catch {
+            Write-Host -ForegroundColor Red  "*** Error creating VPG " + $Error[0].FullyQualifiedErrorId
+        }
+    } else {
+        try {
+            $Result = Add-ZertoVPG -Priority $Priority  `
+                        -VPGName ($VPGName + "-" +  $_.Name) `
+                        -RecoverySiteName $RecoverySiteName `
+                        -ClusterName  $HostClusterName `
+                        -FailoverNetwork  $Network  `
+                        -TestNetwork $TestNetwork `
+                        -DatastoreName $DatastoreName `
+                        -JournalUseDefault $true `
+                        -Folder $DefaultFolder `
+                        -VPGVirtualMachines $VM 
+        } catch {
+            Write-Host -ForegroundColor Red  "*** Error creating VPG " + $Error[0].FullyQualifiedErrorId
+        }
+    }
 }
 
-Write-Host ("Adding " + $AllVMS.Count + " VMs")
-Write-Host ("--Errors after this point are Zerto errors, ie 'VM was not found' indicates Zerto can't find the server in that site") -ForegroundColor Cyan
+Disconnect-VIServer -Server $vCenterSourceServer  -Force -Confirm:$false 
+Disconnect-VIServer -Server $vCenterDestServer -Force -Confirm:$false 
 
-# Create our VPG
-If (-not $CommitVPG) {
-    try {
-        $Result = Add-ZertoVPG -Priority $Priority  `
-                    -VPGName $VPGName `
-                    -RecoverySiteName $RecoverySiteName `
-                    -ClusterName  $HostClusterName `
-                    -FailoverNetwork  $Network  `
-                    -TestNetwork $TestNetwork `
-                    -DatastoreName $DatastoreName `
-                    -JournalUseDefault:$true `
-                    -Folder $DefaultFolder `
-                    -VPGVirtualMachines $AllVMS `
-                    -DumpJSON
-
-    } catch {
-        Write-Host "Error creating VPG"
-    }
-} else {
-    try {
-        $Result = Add-ZertoVPG -Priority $Priority  `
-                    -VPGName $VPGName `
-                    -RecoverySiteName $RecoverySiteName `
-                    -ClusterName  $HostClusterName `
-                    -FailoverNetwork  $Network  `
-                    -TestNetwork $TestNetwork `
-                    -DatastoreName $DatastoreName `
-                    -JournalUseDefault:$true `
-                    -Folder $DefaultFolder `
-                    -VPGVirtualMachines $AllVMS 
-    } catch {
-        Write-Host "Error creating VPG"
-    }
-}
